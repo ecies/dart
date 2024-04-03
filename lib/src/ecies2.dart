@@ -10,7 +10,7 @@ class Ecies {
   static final String curveName = "secp256k1";
   static final int uncompressedPublicKeySize = 65;
   static final int aesIvLength = 12;
-  static final int aesTagLength = 12;
+  static final int aesTagLength = 16;
   static final int aesIvPlusTagLength = aesIvLength + aesTagLength;
   static final int secretKeyLength = 32;
   static final _sGen = Random.secure();
@@ -49,7 +49,6 @@ class Ecies {
     final pair = _generateEphemeralKey(ecSpec);
     ECPrivateKey ephemeralPrivKey = pair.privateKey as ECPrivateKey;
     ECPublicKey ephemeralPubKey = pair.publicKey as ECPublicKey;
-
     // Generate receiver PK
     ECPublicKey publicKey =
         getEcPublicKey(ecSpec.domainParameters, publicKeyBytes);
@@ -111,44 +110,45 @@ class Ecies {
   static Uint8List _aesEncrypt(
       Uint8List message, ECPublicKey ephemeralPubKey, Uint8List aesKey) {
     final cipher = GCMBlockCipher(AESEngine());
-    final nonce = secureRandom.nextBytes(aesIvLength);
-    final parametersWithIV = ParametersWithIV(KeyParameter(aesKey), nonce);
+    final iv = secureRandom.nextBytes(aesIvLength);
+    final parametersWithIV = ParametersWithIV(KeyParameter(aesKey), iv);
     cipher.init(true, parametersWithIV);
 
     final outputSize = cipher.getOutputSize(message.length);
-    var encrypted = Uint8List(outputSize);
-    var pos = cipher.processBytes(message, 0, message.length, encrypted, 0);
-    pos += cipher.doFinal(encrypted, pos);
+    var outputBuffer = Uint8List(outputSize);
+    var outputPosition =
+        cipher.processBytes(message, 0, message.length, outputBuffer, 0);
+    outputPosition += cipher.doFinal(outputBuffer, outputPosition);
 
-    final tag = encrypted.sublist(encrypted.length - nonce.length);
-    encrypted = encrypted.sublist(0, encrypted.length - tag.length);
+    final tag =
+        outputBuffer.sublist(outputPosition - aesTagLength, outputPosition);
+    print("taglen ${tag.length} ${cipher.macSize} $aesTagLength");
+    final cipherText = outputBuffer.sublist(0, outputPosition - aesTagLength);
 
     final ephemeralPkUncompressed = ephemeralPubKey.Q!.getEncoded(false);
 
     print("ephemeralPubKey ${base64Encode(ephemeralPkUncompressed)}");
-    print("nonce ${base64Encode(nonce)}");
+    print("nonce ${base64Encode(iv)}");
     print("tag ${base64Encode(tag)}");
     print("key ${base64Encode(aesKey)}");
-    print("encrypted ${base64Encode(encrypted)}");
+    print("encrypted ${base64Encode(cipherText)}");
 
     final result = Uint8List.fromList(
-        [...ephemeralPkUncompressed, ...nonce, ...tag, ...encrypted]);
-    print("aesEncrypt output ${base64Encode(result)}");
+        [...ephemeralPkUncompressed, ...iv, ...tag, ...cipherText]);
     return result;
   }
 
   static Uint8List _aesDecrypt(Uint8List inputBytes, Uint8List aesKey) {
     final encrypted = inputBytes.sublist(uncompressedPublicKeySize);
+    //[...nonce, ...tag, ...encrypted]
     final nonce = encrypted.sublist(0, aesIvLength);
     final tag = encrypted.sublist(aesIvLength, aesIvPlusTagLength);
     final ciphered = encrypted.sublist(aesIvPlusTagLength);
 
-    print("aesDecrypt input ${base64Encode(inputBytes)}");
     print("nonce ${base64Encode(nonce)}");
     print("tag ${base64Encode(tag)}");
     print("key ${base64Encode(aesKey)}");
-    print(
-        "encrypted ${base64Encode(encrypted.sublist(0, encrypted.length - tag.length))}");
+    print("encrypted ${base64Encode(ciphered)}");
 
     final aesgcmBlockCipher = GCMBlockCipher(AESEngine());
     final parametersWithIV = ParametersWithIV(KeyParameter(aesKey), nonce);
@@ -158,8 +158,13 @@ class Ecies {
         aesgcmBlockCipher.getOutputSize(ciphered.length + tag.length);
     final decrypted = Uint8List(outputSize);
     var pos = aesgcmBlockCipher.processBytes(
-        ciphered, 0, ciphered.length, decrypted, 0);
-    pos += aesgcmBlockCipher.processBytes(tag, 0, tag.length, decrypted, pos);
+        Uint8List.fromList([...ciphered, ...tag]),
+        0,
+        ciphered.length + tag.length,
+        decrypted,
+        0);
+    print("decrypted ${utf8.decode(decrypted)}");
+    // pos += aesgcmBlockCipher.processBytes(tag, 0, aesTagLength, decrypted, pos);
     print("decrypted ${utf8.decode(decrypted)}");
     aesgcmBlockCipher.doFinal(decrypted, pos);
     return decrypted;
