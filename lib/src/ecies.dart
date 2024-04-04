@@ -8,7 +8,7 @@ typedef KeyPairBytes = ({Uint8List publicKey, Uint8List privateKey});
 class Ecies {
   static final int _uncompressedPublicKeySize = 65;
   // 16 bits to match the js implementation https://github.com/ecies/js/blob/f7f0923362beea9e0c4e05c2bcf5bceb1980f9e5/src/config.ts#L19
-  static final int _aesIvLength = 16;
+  static final int aesIvLength = 16;
   static final int _aesTagLength = 16;
   // 32 bytes for 256 bit encryption
   static final int _secretKeyLength = 32;
@@ -97,7 +97,7 @@ class Ecies {
   static Uint8List _aesEncrypt(
       Uint8List message, ECPublicKey ephemeralPubKey, Uint8List aesKey) {
     final cipher = GCMBlockCipher(AESEngine());
-    final iv = _secureRandom.nextBytes(_aesIvLength);
+    final iv = _secureRandom.nextBytes(aesIvLength);
     final parameters = AEADParameters(
         KeyParameter(aesKey), _aesTagLength * 8, iv, Uint8List(0));
 
@@ -117,8 +117,8 @@ class Ecies {
   /// [...iv, ...cipherText, ...tag] where iv 16 bytes and the tag is 16 bytes.
   static Uint8List _aesDecrypt(Uint8List inputBytes, Uint8List aesKey) {
     final ivCipherTextAndTag = inputBytes.sublist(_uncompressedPublicKeySize);
-    final iv = ivCipherTextAndTag.sublist(0, _aesIvLength);
-    final cipherTextAndTag = ivCipherTextAndTag.sublist(_aesIvLength);
+    final iv = ivCipherTextAndTag.sublist(0, aesIvLength);
+    final cipherTextAndTag = ivCipherTextAndTag.sublist(aesIvLength);
 
     final aesgcmBlockCipher = GCMBlockCipher(AESEngine());
     final parametersWithIV = AEADParameters(
