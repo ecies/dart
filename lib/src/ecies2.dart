@@ -1,16 +1,15 @@
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:eciesdart/src/bigint.dart';
 import 'package:pointycastle/export.dart';
-import 'package:hex/hex.dart';
+
+typedef KeyPairBytes = ({Uint8List publicKey, Uint8List privateKey});
 
 class Ecies {
   static final int _uncompressedPublicKeySize = 65;
   // 16 bits to match the js implementation https://github.com/ecies/js/blob/f7f0923362beea9e0c4e05c2bcf5bceb1980f9e5/src/config.ts#L19
   static final int _aesIvLength = 16;
   static final int _aesTagLength = 16;
-  static final int _aesIvPlusTagLength = _aesIvLength + _aesTagLength;
   // 32 bytes for 256 bit encryption
   static final int _secretKeyLength = 32;
   static final _sGen = Random.secure();
@@ -21,66 +20,74 @@ class Ecies {
 
   /// Encrypt a [message].
   ///
-  /// Encrypte a [message] given a [publicKey] as hex encoded version of an ASN.1 BigInt
-  static String encrypt(String publicKey, String message) {
-    final publicKeyBytes = HEX.decode(publicKey);
-    final encrypted =
-        _encryptBytes(Uint8List.fromList(publicKeyBytes), utf8.encode(message));
-    return HEX.encode(encrypted);
-  }
-
-  /// Decrypt a [message].
-  ///
-  /// Decrypt a [message] given a [privateKey] as hex encoded version of an ASN.1 BigInt
-  static String decrypt(String privateKeyHex, String ciphertext) {
-    final privateKey = HEX.decode(privateKeyHex);
-    final cipherBytes = HEX.decode(ciphertext);
-    return utf8.decode(_decryptBytes(
-        Uint8List.fromList(privateKey), Uint8List.fromList(cipherBytes)));
-  }
-
-  static Uint8List _encryptBytes(Uint8List publicKeyBytes, Uint8List message) {
-    // Create an ephemeral key pair
+  /// Encrypt a [message] given a [publicKey] ASN.1 BigInt and return a buffer with the
+  /// format [...iv, ...cipherText, ...tag]
+  static Uint8List encrypt(Uint8List publicKey, Uint8List message) {
     final ecSpec = ECKeyGeneratorParameters(ECCurve_secp256k1());
-    final ephemeralKeyPair = _generateEphemeralKey(ecSpec);
+    final ephemeralKeyPair = Ecies._generateEphemeralKey(ecSpec);
     ECPrivateKey ephemeralPrivKey = ephemeralKeyPair.privateKey as ECPrivateKey;
     ECPublicKey ephemeralPubKey = ephemeralKeyPair.publicKey as ECPublicKey;
     // Generate receiver PK
-    ECPublicKey publicKey =
-        _getEcPublicKey(ecSpec.domainParameters, publicKeyBytes);
+    ECPublicKey publicKey2 =
+        Ecies._getEcPublicKey(ecSpec.domainParameters, publicKey);
 
     // Derive shared secret
     final uncompressed = ephemeralPubKey.Q!.getEncoded(false);
-    final multiply = publicKey.Q! * ephemeralPrivKey.d;
-    final aesKey = _hkdf(uncompressed, multiply!.getEncoded(false));
-
-    // AES encryption
-    return _aesEncrypt(message, ephemeralPubKey, aesKey);
+    final multiply = publicKey2.Q! * ephemeralPrivKey.d;
+    final aesKey = Ecies._hkdf(uncompressed, multiply!.getEncoded(false));
+    return Ecies._aesEncrypt(message, ephemeralPubKey, aesKey);
   }
 
-  static Uint8List _decryptBytes(
-      Uint8List privateKeyBytes, Uint8List cipherBytes) {
+  /// Decrypt  [cipherText].
+  ///
+  /// Decrypt [cipherText] with the format [...iv, ...cipherText, ...tag] with a
+  /// [privateKey] ASN.1 BigInt
+  static Uint8List decrypt(Uint8List privateKey, Uint8List cipherText) {
     final keyParams = ECCurve_secp256k1();
     final ecSpec = ECKeyGeneratorParameters(keyParams);
 
     // Generate receiver private key
-    final d = byteToBigInt(privateKeyBytes);
-    ECPrivateKey privateKey = ECPrivateKey(d, ecSpec.domainParameters);
+    final d = byteToBigInt(privateKey);
+    ECPrivateKey privateKey2 = ECPrivateKey(d, ecSpec.domainParameters);
 
     // Get sender public key
     final senderPubKeyBytes =
-        cipherBytes.sublist(0, _uncompressedPublicKeySize);
+        cipherText.sublist(0, Ecies._uncompressedPublicKeySize);
 
     final Q = ecSpec.domainParameters.curve.decodePoint(senderPubKeyBytes);
     final senderPubKey = ECPublicKey(Q, ecSpec.domainParameters);
 
     // Decapsulate
     final uncompressed = senderPubKey.Q!.getEncoded(false);
-    final multiply = senderPubKey.Q! * privateKey.d;
-    final aesKey = _hkdf(uncompressed, multiply!.getEncoded(false));
+    final multiply = senderPubKey.Q! * privateKey2.d;
+    final aesKey = Ecies._hkdf(uncompressed, multiply!.getEncoded(false));
+    return Ecies._aesDecrypt(cipherText, aesKey);
+  }
 
-    // AES decryption
-    return _aesDecrypt(cipherBytes, aesKey);
+  /// Generate an EC key pair.
+  ///
+  /// Generate an EC key pair using the secp256k1 curve.
+  static AsymmetricKeyPair<ECPublicKey, ECPrivateKey> generateEcKeyPair() {
+    final keyParams = ECCurve_secp256k1();
+    final ecSpec = ECKeyGeneratorParameters(keyParams);
+    final keyGenerator = ECKeyGenerator()
+      ..init(ParametersWithRandom(ecSpec, _secureRandom));
+    final pair = keyGenerator.generateKeyPair();
+    final publicKey = pair.publicKey as ECPublicKey;
+    final privateKey = pair.privateKey as ECPrivateKey;
+    return AsymmetricKeyPair(publicKey, privateKey);
+  }
+
+  /// Generate an EC key pair.
+  ///
+  /// Generate an EC key pair using the secp256k1 curve and retrn the ASN.1
+  /// representation of the [BigInt]s
+  static KeyPairBytes generateEcKeyPairBytes() {
+    final pair = generateEcKeyPair();
+    return (
+      publicKey: pair.publicKey.Q!.getEncoded(false),
+      privateKey: bigIntToBytes(pair.privateKey.d!)
+    );
   }
 
   /// Encrypt a [message] using AES-256-GCM.

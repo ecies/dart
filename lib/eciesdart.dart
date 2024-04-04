@@ -1,8 +1,5 @@
-/// Support for doing something awesome.
-///
-/// More dartdocs go here.
+/// ECIES encryption in Dart.
 library;
 
-export 'src/eciesdart_base.dart';
-
-// TODO: Export any libraries intended for clients of this package.
+export 'src/ecies.dart';
+export 'src/bigint.dart';
