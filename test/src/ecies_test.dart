@@ -1,7 +1,6 @@
 import 'dart:convert';
 
-import 'package:eciesdart/src/bigint.dart';
-import 'package:eciesdart/src/ecies2.dart';
+import 'package:eciesdart/eciesdart.dart';
 import 'package:test/test.dart';
 import 'package:collection/collection.dart';
 import 'package:bip32/bip32.dart';
