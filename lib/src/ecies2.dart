@@ -1,4 +1,3 @@
-// import 'dart:math';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -7,34 +6,32 @@ import 'package:pointycastle/export.dart';
 import 'package:hex/hex.dart';
 
 class Ecies {
-  static final String curveName = "secp256k1";
-  static final int uncompressedPublicKeySize = 65;
-  static final int aesIvLength = 12;
-  static final int aesTagLength = 16;
-  static final int aesIvPlusTagLength = aesIvLength + aesTagLength;
-  static final int secretKeyLength = 32;
+  static final int _uncompressedPublicKeySize = 65;
+  // 16 bits to match the js implementation https://github.com/ecies/js/blob/f7f0923362beea9e0c4e05c2bcf5bceb1980f9e5/src/config.ts#L19
+  static final int _aesIvLength = 16;
+  static final int _aesTagLength = 16;
+  static final int _aesIvPlusTagLength = _aesIvLength + _aesTagLength;
+  // 32 bytes for 256 bit encryption
+  static final int _secretKeyLength = 32;
   static final _sGen = Random.secure();
   static final _seed =
       Uint8List.fromList(List.generate(32, (n) => _sGen.nextInt(255)));
-  static final secureRandom = SecureRandom('Fortuna')
-    ..seed(KeyParameter(_seed)); // Using Fortuna instead of SecureRandom
+  static final _secureRandom = SecureRandom('Fortuna')
+    ..seed(KeyParameter(_seed));
 
-  // static AsymmetricKeyPair<PublicKey, PrivateKey> _generateEcKeyPair() {
-  //   final keyParams = ECCurve_secp256k1();
-  //   final ecSpec = ECKeyGeneratorParameters(keyParams);
-  //   final keyGenerator = ECKeyGenerator()
-  //     ..init(ParametersWithRandom(ecSpec, secureRandom));
-  //   return keyGenerator.generateKeyPair();
-  // }
-
-  /// Hex encoding of a BigInt asn1 encoding
-  static String encrypt(String publicKeyHex, String message) {
-    final publicKey = HEX.decode(publicKeyHex);
+  /// Encrypt a [message].
+  ///
+  /// Encrypte a [message] given a [publicKey] as hex encoded version of an ASN.1 BigInt
+  static String encrypt(String publicKey, String message) {
+    final publicKeyBytes = HEX.decode(publicKey);
     final encrypted =
-        _encryptBytes(Uint8List.fromList(publicKey), utf8.encode(message));
+        _encryptBytes(Uint8List.fromList(publicKeyBytes), utf8.encode(message));
     return HEX.encode(encrypted);
   }
 
+  /// Decrypt a [message].
+  ///
+  /// Decrypt a [message] given a [privateKey] as hex encoded version of an ASN.1 BigInt
   static String decrypt(String privateKeyHex, String ciphertext) {
     final privateKey = HEX.decode(privateKeyHex);
     final cipherBytes = HEX.decode(ciphertext);
@@ -44,14 +41,13 @@ class Ecies {
 
   static Uint8List _encryptBytes(Uint8List publicKeyBytes, Uint8List message) {
     // Create an ephemeral key pair
-    final keyParams = ECCurve_secp256k1();
-    final ecSpec = ECKeyGeneratorParameters(keyParams);
-    final pair = _generateEphemeralKey(ecSpec);
-    ECPrivateKey ephemeralPrivKey = pair.privateKey as ECPrivateKey;
-    ECPublicKey ephemeralPubKey = pair.publicKey as ECPublicKey;
+    final ecSpec = ECKeyGeneratorParameters(ECCurve_secp256k1());
+    final ephemeralKeyPair = _generateEphemeralKey(ecSpec);
+    ECPrivateKey ephemeralPrivKey = ephemeralKeyPair.privateKey as ECPrivateKey;
+    ECPublicKey ephemeralPubKey = ephemeralKeyPair.publicKey as ECPublicKey;
     // Generate receiver PK
     ECPublicKey publicKey =
-        getEcPublicKey(ecSpec.domainParameters, publicKeyBytes);
+        _getEcPublicKey(ecSpec.domainParameters, publicKeyBytes);
 
     // Derive shared secret
     final uncompressed = ephemeralPubKey.Q!.getEncoded(false);
@@ -72,28 +68,68 @@ class Ecies {
     ECPrivateKey privateKey = ECPrivateKey(d, ecSpec.domainParameters);
 
     // Get sender public key
-    final senderPubKeyBytes = cipherBytes.sublist(0, uncompressedPublicKeySize);
+    final senderPubKeyBytes =
+        cipherBytes.sublist(0, _uncompressedPublicKeySize);
 
     final Q = ecSpec.domainParameters.curve.decodePoint(senderPubKeyBytes);
     final senderPubKey = ECPublicKey(Q, ecSpec.domainParameters);
 
     // Decapsulate
     final uncompressed = senderPubKey.Q!.getEncoded(false);
-    final multiply = senderPubKey.Q! * d;
+    final multiply = senderPubKey.Q! * privateKey.d;
     final aesKey = _hkdf(uncompressed, multiply!.getEncoded(false));
 
     // AES decryption
     return _aesDecrypt(cipherBytes, aesKey);
   }
 
+  /// Encrypt a [message] using AES-256-GCM.
+  ///
+  /// Encrypt a [message] and return a buffer in the following format [...iv, ...cipherText, ...tag]
+  /// where iv 16 bytes and the tag is 16 bytes.
+  static Uint8List _aesEncrypt(
+      Uint8List message, ECPublicKey ephemeralPubKey, Uint8List aesKey) {
+    final cipher = GCMBlockCipher(AESEngine());
+    final iv = _secureRandom.nextBytes(_aesIvLength);
+    final parameters = AEADParameters(
+        KeyParameter(aesKey), _aesTagLength * 8, iv, Uint8List(0));
+
+    cipher.init(true, parameters);
+
+    final ephemeralPkUncompressed = ephemeralPubKey.Q!.getEncoded(false);
+    final cipherTextAndTag = cipher.process(message);
+
+    final result = Uint8List.fromList(
+        [...ephemeralPkUncompressed, ...iv, ...cipherTextAndTag]);
+    return result;
+  }
+
+  /// Decrypt  [inputBytes] using AES-256-GCM.
+  ///
+  /// Decrypt [inputBytes] where inputBytes is assumed to have the following format
+  /// [...iv, ...cipherText, ...tag] where iv 16 bytes and the tag is 16 bytes.
+  static Uint8List _aesDecrypt(Uint8List inputBytes, Uint8List aesKey) {
+    final ivCipherTextAndTag = inputBytes.sublist(_uncompressedPublicKeySize);
+    final iv = ivCipherTextAndTag.sublist(0, _aesIvLength);
+    final cipherTextAndTag = ivCipherTextAndTag.sublist(_aesIvLength);
+
+    final aesgcmBlockCipher = GCMBlockCipher(AESEngine());
+    final parametersWithIV = AEADParameters(
+        KeyParameter(aesKey), _aesTagLength * 8, iv, Uint8List(0));
+    aesgcmBlockCipher.init(false, parametersWithIV);
+    final plainText = aesgcmBlockCipher.process(cipherTextAndTag);
+
+    return plainText;
+  }
+
   static AsymmetricKeyPair<PublicKey, PrivateKey> _generateEphemeralKey(
       ECKeyGeneratorParameters ecSpec) {
     final keyGenerator = ECKeyGenerator()
-      ..init(ParametersWithRandom(ecSpec, secureRandom));
+      ..init(ParametersWithRandom(ecSpec, _secureRandom));
     return keyGenerator.generateKeyPair();
   }
 
-  static ECPublicKey getEcPublicKey(
+  static ECPublicKey _getEcPublicKey(
       ECDomainParameters params, List<int> senderPubKeyBytes) {
     var Q = params.curve.decodePoint(senderPubKeyBytes);
     return ECPublicKey(Q, params);
@@ -103,70 +139,7 @@ class Ecies {
     final initialKeyMaterial =
         Uint8List.fromList([...uncompressed, ...multiply]);
     final hkdf = KeyDerivator("SHA-256/HKDF");
-    hkdf.init(HkdfParameters(initialKeyMaterial, secretKeyLength, null));
-    return hkdf.process(Uint8List(secretKeyLength));
-  }
-
-  static Uint8List _aesEncrypt(
-      Uint8List message, ECPublicKey ephemeralPubKey, Uint8List aesKey) {
-    final cipher = GCMBlockCipher(AESEngine());
-    final iv = secureRandom.nextBytes(aesIvLength);
-    final parametersWithIV = ParametersWithIV(KeyParameter(aesKey), iv);
-    cipher.init(true, parametersWithIV);
-
-    final outputSize = cipher.getOutputSize(message.length);
-    var outputBuffer = Uint8List(outputSize);
-    var outputPosition =
-        cipher.processBytes(message, 0, message.length, outputBuffer, 0);
-    outputPosition += cipher.doFinal(outputBuffer, outputPosition);
-
-    final tag =
-        outputBuffer.sublist(outputPosition - aesTagLength, outputPosition);
-    print("taglen ${tag.length} ${cipher.macSize} $aesTagLength");
-    final cipherText = outputBuffer.sublist(0, outputPosition - aesTagLength);
-
-    final ephemeralPkUncompressed = ephemeralPubKey.Q!.getEncoded(false);
-
-    print("ephemeralPubKey ${base64Encode(ephemeralPkUncompressed)}");
-    print("nonce ${base64Encode(iv)}");
-    print("tag ${base64Encode(tag)}");
-    print("key ${base64Encode(aesKey)}");
-    print("encrypted ${base64Encode(cipherText)}");
-
-    final result = Uint8List.fromList(
-        [...ephemeralPkUncompressed, ...iv, ...tag, ...cipherText]);
-    return result;
-  }
-
-  static Uint8List _aesDecrypt(Uint8List inputBytes, Uint8List aesKey) {
-    final encrypted = inputBytes.sublist(uncompressedPublicKeySize);
-    //[...nonce, ...tag, ...encrypted]
-    final nonce = encrypted.sublist(0, aesIvLength);
-    final tag = encrypted.sublist(aesIvLength, aesIvPlusTagLength);
-    final ciphered = encrypted.sublist(aesIvPlusTagLength);
-
-    print("nonce ${base64Encode(nonce)}");
-    print("tag ${base64Encode(tag)}");
-    print("key ${base64Encode(aesKey)}");
-    print("encrypted ${base64Encode(ciphered)}");
-
-    final aesgcmBlockCipher = GCMBlockCipher(AESEngine());
-    final parametersWithIV = ParametersWithIV(KeyParameter(aesKey), nonce);
-    aesgcmBlockCipher.init(false, parametersWithIV);
-
-    final outputSize =
-        aesgcmBlockCipher.getOutputSize(ciphered.length + tag.length);
-    final decrypted = Uint8List(outputSize);
-    var pos = aesgcmBlockCipher.processBytes(
-        Uint8List.fromList([...ciphered, ...tag]),
-        0,
-        ciphered.length + tag.length,
-        decrypted,
-        0);
-    print("decrypted ${utf8.decode(decrypted)}");
-    // pos += aesgcmBlockCipher.processBytes(tag, 0, aesTagLength, decrypted, pos);
-    print("decrypted ${utf8.decode(decrypted)}");
-    aesgcmBlockCipher.doFinal(decrypted, pos);
-    return decrypted;
+    hkdf.init(HkdfParameters(initialKeyMaterial, _secretKeyLength, null));
+    return hkdf.process(Uint8List(_secretKeyLength));
   }
 }
