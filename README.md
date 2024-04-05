@@ -1,39 +1,38 @@
-<!-- 
-This README describes the package. If you publish this package to pub.dev,
-this README's contents appear on the landing page for your package.
+Elliptic Curve Integrated Encryption Scheme for secp256k1 in Dart.
 
-For information about how to write a good package README, see the guide for
-[writing package pages](https://dart.dev/guides/libraries/writing-package-pages). 
-
-For general information about developing packages, see the Dart guide for
-[creating packages](https://dart.dev/guides/libraries/create-library-packages)
-and the Flutter guide for
-[developing packages and plugins](https://flutter.dev/developing-packages). 
--->
-
-TODO: Put a short description of the package here that helps potential users
-know whether this package might be useful for them.
-
-## Features
-
-TODO: List what your package can do. Maybe include images, gifs, or videos.
-
-## Getting started
-
-TODO: List prerequisites and provide or point to information on how to
-start using the package.
+This is the Dart version of [eciespy](https://github.com/ecies/py)
 
 ## Usage
-
-TODO: Include short and useful examples for package users. Add longer examples
-to `/example` folder. 
+Encrypt a message
 
 ```dart
-const like = 'sample';
+import 'package:eciesdart/eciesdart.dart';
+
+final keyPair = Ecies.generateEcKeyPairBytes();
+final message = "Welcome to ECIES";
+var messageBytes = utf8.encode(message);
+final cipherText = Ecies.encrypt(keyPair.publicKey, messageBytes);
+
+final decryptedBytes = Ecies.decrypt(keyPair.privateKey, cipherText);
+final decryptedMessage = utf8.decode(decryptedBytes);
+
+print(decryptedMessage);
 ```
 
-## Additional information
+Encrypt using an [AsymmetricKeyPair<ECPublicKey, ECPrivateKey>]
 
-TODO: Tell users more about the package: where to find more information, how to 
-contribute to the package, how to file issues, what response they can expect 
-from the package authors, and more.
+```dart
+import 'package:eciesdart/eciesdart.dart';
+
+final keyPair = Ecies.generateEcKeyPair();
+final message = "Welcome to ECIES";
+var messageBytes = utf8.encode(message);
+final publicKey = keyPair.publicKey.Q!.getEncoded(false);
+final privateKey = bigIntToBytes(keyPair.privateKey.d!);
+final cipherText = Ecies.encrypt(publicKey, messageBytes);
+
+final decryptedBytes = Ecies.decrypt(privateKey, cipherText);
+final decryptedMessage = utf8.decode(decryptedBytes);
+
+print(decryptedMessage);
+```
