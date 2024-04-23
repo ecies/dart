@@ -9,7 +9,7 @@ dependencies:
   hex: ^0.2.0
   pointycastle: ^3.7.4
 
-repository: https://github.com/yourownwallet/eciesdart
+repository: https://github.com/ecies/dart
 
 dev_dependencies:
   collection: ^1.18.0
